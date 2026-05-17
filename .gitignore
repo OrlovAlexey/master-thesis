@@ -10,3 +10,6 @@
 *.toc
 *.blg
 main.pdf
+result.json
+context.txt
+plan.pdf
