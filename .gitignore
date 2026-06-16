@@ -13,3 +13,7 @@ main.pdf
 result.json
 context.txt
 plan.pdf
+.DS_Store
+.kilo/
+TunePPO/
+smart-thinking-llm/
