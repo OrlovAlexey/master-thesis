@@ -66,6 +66,12 @@
 %% Интервалы
 \linespread{1}
 
+%% Уменьшение переполнений строк (overfull hbox) в текстовых абзацах
+\setlength{\emergencystretch}{5em}
+%% Разрешаем перенос длинных идентификаторов \texttt{...} по подчёркиваниям
+%% (математические индексы используют голый _, поэтому не затрагиваются)
+\renewcommand{\_}{\textunderscore\allowbreak}
+
 %% TikZ
 \usepackage{tikz}
 \usetikzlibrary{graphs,graphs.standard,positioning,arrows.meta,shapes.geometric,calc,fit,backgrounds}
