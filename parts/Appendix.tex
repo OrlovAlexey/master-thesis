@@ -1,5 +1,250 @@
-\section*{Приложение}
-\addcontentsline{toc}{section}{Приложение}
-\label{sec:Apendix} \index{Apendix}
+\section*{Приложения}
+\addcontentsline{toc}{section}{Приложения}
+\label{sec:Appendix} \index{Appendix}
 
-Здесь необходимо написать приложение, которое вы должны придумать самостоятельно.
+В приложениях приведены ключевые артефакты реализации, необходимые для воспроизведения экспериментов: системные промпты, схемы структурированного вывода, конфигурация обучения, примеры данных и реализация процедуры валидации графа.
+
+\subsection*{Приложение А. Системный промпт RuleTaker (графовый режим)}
+\addcontentsline{toc}{subsection}{Приложение А. Системный промпт RuleTaker}
+
+Системный промпт задаёт жёсткий формат вывода \texttt{<think>...</think><answer>...</answer>}, в котором блок \texttt{<answer>} содержит JSON-массив рёбер графа рассуждения и финальную метку.
+
+\begin{lstlisting}[basicstyle=\footnotesize\ttfamily]
+You are a logical reasoning assistant. Given a context containing facts
+and rules about entities, determine whether a given statement can be
+logically derived from the provided information.
+
+Analyze the context step by step in <think> tags, then give your answer
+in <answer> tags.
+
+The <answer> block MUST contain:
+1. A JSON array of reasoning edges -- each edge is ["evidence",
+   "conclusion"], meaning "evidence supports conclusion".
+2. On a separate line: exactly 'entailment' or 'not entailment'.
+
+Rules for building edges:
+- Each edge is ["A", "B"] where A is a fact or derived claim that
+  supports B.
+- Facts (from the context) are leaves -- they appear only as evidence,
+  never as conclusion.
+- The statement you are checking is the root -- it appears only as
+  conclusion, never as evidence.
+- Write claims as "subject relation object" (e.g. "cow chases lion").
+- For entailment: pick ONE rule per step and include ALL its conditions.
+- For not entailment: show that NO rule works -- for each possible rule,
+  show ONE condition that fails.
+- Do NOT wrap the JSON in markdown code fences.
+
+Example:
+<think>cow chases lion is a fact. Rule says: if cow chases lion then
+lion needs tiger. So lion needs tiger.</think>
+<answer>
+[["cow chases lion", "lion needs tiger"]]
+entailment
+</answer>
+\end{lstlisting}
+
+\subsection*{Приложение Б. Схемы структурированного вывода (Pydantic)}
+\addcontentsline{toc}{subsection}{Приложение Б. Схемы структурированного вывода}
+
+Схемы Pydantic задают контракт извлечения графа вспомогательной LLM (\texttt{StructuredGraphCreator}) и гарантируют синтаксически корректный JSON-выход.
+
+\begin{lstlisting}[language=Python, basicstyle=\footnotesize\ttfamily]
+class RuleTakerFact(BaseModel):
+    src: str
+    rel: str
+    tgt: str
+    negated: bool = False
+
+class RuleTakerSimplePath(BaseModel):
+    path: List[RuleTakerFact]
+
+class ReasoningGraphNode(BaseModel):
+    node_id: int
+    type: str  # question | fact | condition | rule
+    src: Optional[str] = None
+    rel: Optional[str] = None
+    tgt: Optional[str] = None
+    fact_id: Optional[str] = None
+    rule_id: Optional[str] = None
+    condition_id: Optional[int] = None
+
+class ReasoningGraphConnection(BaseModel):
+    from_node: int
+    to_node: int
+
+class ReasoningGraph(BaseModel):
+    nodes: ReasoningGraphNodes
+    adj_lists: ReasoningGraphConnections
+\end{lstlisting}
+
+\subsection*{Приложение В. Конфигурация обучения GRPO (VERL)}
+\addcontentsline{toc}{subsection}{Приложение В. Конфигурация обучения GRPO}
+
+Фрагмент команды запуска основной серии экспериментов на RuleTaker (платформа VERL, одна GPU класса H100).
+
+\begin{lstlisting}[basicstyle=\footnotesize\ttfamily]
+python3 -m verl.trainer.main_ppo \
+  algorithm.adv_estimator=grpo \
+  algorithm.kl_ctrl.kl_coef=0.1 \
+  data.train_batch_size=128 \
+  data.max_prompt_length=1024 \
+  data.max_response_length=4096 \
+  actor_rollout_ref.model.path=Qwen/Qwen3-0.6B \
+  actor_rollout_ref.model.lora_rank=64 \
+  actor_rollout_ref.model.lora_alpha=16 \
+  actor_rollout_ref.model.enable_gradient_checkpointing=True \
+  actor_rollout_ref.actor.optim.lr=1e-4 \
+  actor_rollout_ref.actor.ppo_mini_batch_size=64 \
+  actor_rollout_ref.actor.use_kl_loss=True \
+  actor_rollout_ref.actor.kl_loss_coef=0.001 \
+  actor_rollout_ref.rollout.name=vllm \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+  actor_rollout_ref.rollout.n=8 \
+  actor_rollout_ref.rollout.temperature=0.7 \
+  reward.custom_reward_function.path=verl_exp/edge_reasoning_reward.py \
+  +reward.custom_reward_function.reward_kwargs.graph_validity_scale=1.0 \
+  +reward.custom_reward_function.reward_kwargs.graph_validity_reward=100.0 \
+  +reward.custom_reward_function.reward_kwargs.correct_answer_reward=100.0 \
+  trainer.total_epochs=1 trainer.save_freq=10 trainer.test_freq=10
+\end{lstlisting}
+
+\subsection*{Приложение Г. Пример обучающего примера RuleTaker}
+\addcontentsline{toc}{subsection}{Приложение Г. Пример данных}
+
+Каждый пример датасета \texttt{KGReasoning} содержит промпт, эталонную метку и отображение \texttt{proof\_rules} (заключение $\mapsto$ списки допустимых наборов посылок).
+
+\begin{lstlisting}[basicstyle=\footnotesize\ttfamily]
+{
+  "data_source": "ruletaker_kg",
+  "ability": "logical_reasoning",
+  "extra_info": {
+    "question": "the lion needs the tiger",
+    "context": "The cow chases the lion. If something chases the lion
+                then the lion needs the tiger. ..."
+  },
+  "reward_model": {
+    "style": "rule",
+    "ground_truth": {
+      "label": "entailment",
+      "proof_rules": {
+        "lion needs tiger": [["cow chases lion"]]
+      }
+    }
+  }
+}
+\end{lstlisting}
+
+\subsection*{Приложение Д. Процедура валидации подграфа}
+\addcontentsline{toc}{subsection}{Приложение Д. Процедура валидации подграфа}
+
+Ключевая процедура, формирующая обучающий сигнал: рекурсивный обход узлов-заключений от вопроса с проверкой полноты набора посылок (раздел~\ref{subsec:metrics-formalization}).
+
+\begin{lstlisting}[language=Python, basicstyle=\footnotesize\ttfamily]
+def check_node(node):
+    if node in visited:
+        return True
+    visited.add(node); total_nodes += 1
+    evidences = by_conclusion.get(node)
+    if evidences is None:          # leaf fact -- valid
+        valid_nodes += 1; return True
+    gt_variants = norm_rules.get(node)
+    if gt_variants is None:        # no ground-truth rule for node
+        return False
+    if any(evidences == variant for variant in gt_variants):
+        valid_nodes += 1           # fully valid (score 1.0)
+        for ev in evidences: check_node(ev)
+        return True
+    valid_nodes += 0.5             # partially valid (score 0.5)
+    for ev in evidences: check_node(ev)
+    return False
+
+check_node(norm_question)
+coverage = valid_nodes / total_nodes if total_nodes > 0 else 0.0
+\end{lstlisting}
+
+\subsection*{Приложение Е. Baseline-промпт и пользовательские шаблоны}
+\addcontentsline{toc}{subsection}{Приложение Е. Baseline-промпт и шаблоны}
+
+Для контрастного baseline-режима ($\alpha=0$) используется упрощённый системный промпт, не требующий построения графа рёбер, а только финальной метки.
+
+\begin{lstlisting}[basicstyle=\footnotesize\ttfamily]
+# SYSTEM_PROMPT_BASELINE
+You are a logical reasoning assistant. Given a context containing facts
+and rules about entities, determine whether a given statement can be
+logically derived from the provided information.
+
+Analyze the context step by step, identifying which facts and rules are
+relevant to prove or disprove the statement. Put your reasoning in
+<think> tags and your final answer in <answer> tags. Your answer must be
+exactly "entailment" if the statement follows from the context, or
+"not entailment" if it does not.
+
+# USER_TEMPLATE (graph mode)
+Context:
+{context}
+
+Statement: {question}
+
+Can this statement be derived from the facts and rules in the context?
+Reply with <think>...</think><answer>[[edges...]]\n
+entailment OR not entailment</answer>.
+\end{lstlisting}
+
+\subsection*{Приложение Ж. Вычисление меры сходства графов на основе GED}
+\addcontentsline{toc}{subsection}{Приложение Ж. Вычисление GES}
+
+Нормированная мера Graph Edit Similarity вычисляется на основе расстояния редактирования графов (\texttt{networkx}) с единичными стоимостями операций над вершинами и рёбрами.
+
+\begin{lstlisting}[language=Python, basicstyle=\footnotesize\ttfamily]
+def graph_edit_similarity(pred, gt):
+    if pred.number_of_nodes() == 0 and gt.number_of_nodes() == 0:
+        return 1.0
+    ged = nx.graph_edit_distance(
+        pred, gt,
+        node_match=lambda a, b: a["label"] == b["label"],
+        edge_match=lambda a, b: a["label"] == b["label"],
+    )
+    denom = max(pred.number_of_nodes() + pred.number_of_edges(),
+                gt.number_of_nodes() + gt.number_of_edges())
+    return 1.0 - ged / denom if denom > 0 else 0.0
+\end{lstlisting}
+
+\subsection*{Приложение З. Композиция функции награды}
+\addcontentsline{toc}{subsection}{Приложение З. Композиция функции награды}
+
+Итоговая награда складывается из шести компонент (формула~(\ref{eq:reward-total})). Ниже приведён фрагмент вычисления, отражающий обработку формата, корректности метки и графового покрытия, включая частный случай отрицательного примера.
+
+\begin{lstlisting}[language=Python, basicstyle=\footnotesize\ttfamily]
+# tags: number of <think> / <answer> blocks
+reward_think_tags = think_tag_reward if len(tags["think"]) == 1 else \
+    (-(len(tags["think"]) - 1) * think_tag_reward if tags["think"] else 0.0)
+reward_answer_tags = answer_tag_reward if len(tags["answer"]) == 1 else \
+    (-answer_tag_reward * 10 if not tags["answer"]
+     else -(len(tags["answer"]) - 1) * answer_tag_reward)
+
+# parse the JSON edge list out of <answer>
+predicted_edges, label_text, parse_meta = parse_answer_block(answer_text)
+reward_graph_parse = graph_parse_bonus if parse_meta["graph_parse_ok"] else 0.0
+
+# final-label correctness
+normalized = normalize_answer(label_text)
+is_correct = normalized is not None and normalized == gt_label
+reward_correct_answer = correct_answer_reward if is_correct else 0.0
+
+# graph coverage (dense structural signal)
+if gt_label == "not entailment":
+    graph_coverage = 1.0 if not predicted_edges else 0.5
+elif gt_proof_rules:
+    graph_coverage, _ = validate_subgraph(
+        predicted_edges, gt_proof_rules, question_text)
+else:
+    graph_coverage = 1.0 if not predicted_edges else 0.0
+
+reward_graph_validity = (
+    graph_coverage * graph_validity_reward * graph_validity_scale)  # alpha
+reward_format = -min(content_len * format_penalty, 100.0)
+
+reward = (reward_think_tags + reward_answer_tags + reward_graph_parse
+          + reward_correct_answer + reward_graph_validity + reward_format)
+\end{lstlisting}

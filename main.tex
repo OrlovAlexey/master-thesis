@@ -33,6 +33,8 @@
     % \fontsize{14}{16}\selectfont
     \input{parts/Chapter0.tex} %% Введение
     \newpage
+    \input{parts/ChapterTheory.tex} %% Теоретические основы
+    \newpage
     \input{parts/Chapter1.tex} %% Постановка задачи
     \newpage
     \input{parts/Chapter2.tex} %% Обзор существующих решений
@@ -47,7 +49,7 @@
     \nocite{*}
     \bibliography{references}
 
-    %% в зависимости от надобности подключаем раздел "Приложение"
-    % \newpage
-    % \input{Appendix.tex}
+    %% Приложения
+    \newpage
+    \input{parts/Appendix.tex}
 \end{document}

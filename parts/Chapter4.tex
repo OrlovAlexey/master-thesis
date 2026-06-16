@@ -34,7 +34,41 @@
     \item \texttt{TunePPO}~\cite{tuneppo2024}~--- RL-цикл: реализация графовых функций награды (\texttt{verl\_exp/edge\_rea\-soning\_reward.py} для RuleTaker и \texttt{GraphMultihopQAReward} в \texttt{ppotune/reward.py} для Wikidata), скрипты подготовки данных (\texttt{ruletaker\_prepare\_data\_kg.py}, \texttt{ruletaker\_prepare\_data\_struct.py}) и запуска обучения поверх VERL и torchtune.
 \end{itemize}
 
-Модульная организация (абстрактные базовые классы \texttt{BaseDataset}, \texttt{BasePatternFinder}, \texttt{BaseQuestionGenerator}, базовый \texttt{GraphCreator} и интерфейс \texttt{IRewardModel}) обеспечивает заменяемость компонентов: добавление нового датасета, экстрактора графа или функции награды не затрагивает остальные подсистемы, что выполняет нефункциональное требование модульности из раздела~\ref{subsec:requirements}.
+Модульная организация (абстрактные базовые классы \texttt{BaseDataset}, \texttt{BasePatternFinder}, \texttt{BaseQuestionGenerator}, базовый \texttt{GraphCreator} и интерфейс \texttt{IRewardModel}) обеспечивает заменяемость компонентов: добавление нового датасета, экстрактора графа или функции награды не затрагивает остальные подсистемы, что выполняет нефункциональное требование модульности из раздела~\ref{subsec:requirements}. Общая структура комплекса и взаимодействие двух репозиториев показаны на рис.~\ref{fig:architecture}.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    mod/.style={draw, rounded corners, align=center, font=\footnotesize, minimum height=7mm, inner sep=3pt, fill=black!3},
+    grp/.style={draw, dashed, rounded corners, inner sep=5mm},
+    arr/.style={-{Stealth[length=2mm]}, thick},
+    node distance=4mm,
+]
+% smart-thinking-llm modules
+\node[mod] (data) {datasets/};
+\node[mod, below=of data] (find) {find\_patterns/};
+\node[mod, below=of find] (gen) {generation/};
+\node[mod, right=14mm of data] (gc) {graph\_creator/};
+\node[mod, below=of gc] (metrics) {metrics/};
+\node[mod, below=of metrics] (eval) {evalscope/};
+\begin{scope}[on background layer]
+\node[grp, fit=(data)(find)(gen)(gc)(metrics)(eval), label={[font=\small\bfseries]above:smart-thinking-llm}] (stl) {};
+\end{scope}
+% TunePPO modules
+\node[mod, right=30mm of gc] (reward) {награды:\\edge / multihop};
+\node[mod, below=of reward] (prep) {prepare\_data};
+\node[mod, below=of prep] (train) {VERL / torchtune};
+\begin{scope}[on background layer]
+\node[grp, fit=(reward)(prep)(train), label={[font=\small\bfseries]above:TunePPO}] (tppo) {};
+\end{scope}
+\draw[arr] (stl.east|-reward) -- node[above, font=\scriptsize]{$\hat{G}, G^*$} (reward.west);
+\draw[arr] (gc) -- (metrics);
+\draw[arr] (reward) -- (train);
+\draw[arr] (prep) -- (train);
+\end{tikzpicture}
+\caption{Архитектура программного комплекса: smart-thinking-llm (данные, графы, метрики, оценка) и TunePPO (награды и RL-обучение)}
+\label{fig:architecture}
+\end{figure}
 
 \subsection{Схема функционирования}
 \label{subsec:impl-flow}
@@ -99,7 +133,9 @@
 \subsection{Инфраструктура оценки}
 \label{subsec:impl-eval}
 
-Для воспроизводимой оценки реализован собственный адаптер RuleTaker в составе \texttt{evalscope} (\texttt{evalscope/benchmarks/ruletaker/ruletaker\_adapter.py}) с метрикой \texttt{rule\-taker\_accuracy}, а также конфигурация \texttt{evalscope\_multi\_runner} для пакетного прогона нескольких моделей. Параллельно модели оцениваются на внешних бенчмарках рассуждений (\texttt{math\_500}, \texttt{aime24}/\texttt{aime25}, \texttt{gpqa}, \texttt{mmlu\_redux}, \texttt{zebra\_logic}, \texttt{live\_code\_bench}), что позволяет контролировать сохранность общих способностей модели после дообучения на узкой логической задаче. Результаты этой оценки приводятся и анализируются в разделе~\ref{subsec:impl-results}.
+Для воспроизводимой оценки реализован собственный адаптер RuleTaker в составе \texttt{evalscope} (\texttt{evalscope/benchmarks/ruletaker/ruletaker\_adapter.py}) с метрикой \texttt{rule\-taker\_accuracy}, а также конфигурация \texttt{evalscope\_multi\_runner} для пакетного прогона нескольких моделей. Параллельно модели оцениваются на внешних бенчмарках рассуждений (\texttt{math\_500}, \texttt{aime24}/\texttt{aime25}, \texttt{gpqa}, \texttt{mmlu\_redux}, \texttt{zebra\_logic}, \texttt{live\_code\_bench}), что позволяет контролировать сохранность общих способностей модели после дообучения на узкой логической задаче.
+
+\textbf{Протокол оценки.} Оценка проводится в режиме \texttt{pass@1} (один сэмпл на запрос) с температурой $0{,}7$; на целевой задаче RuleTaker используется полный валидационный срез ($10\,000$ примеров). Для каждой модели вычисляются: точность предсказания метки \texttt{entailment}/\texttt{not entailment} (метрика \texttt{ruletaker\_accuracy}) и, по мере готовности соответствующего режима бенчмарка, структурные метрики (покрытие эталонного подграфа, Edge~$F_1$, GES). Модели, не приученные к строгому формату, оцениваются с извлечением графа подходом~2 (\texttt{StructuredGraphCreator}), модели семейства Qwen3~--- прямым разбором блока \texttt{<answer>}. Внешние бенчмарки запускаются с конфигурациями по умолчанию из \texttt{evalscope}, число прогонов варьируется, что объясняет разброс значений в таблице~\ref{tab:generalization}. Результаты приводятся и анализируются в разделе~\ref{subsec:impl-results}.
 
 \subsection{Результаты экспериментов}
 \label{subsec:impl-results}
@@ -166,3 +202,102 @@ Qwen3-8B (справочно)         & $0{,}94$ & $0{,}667$ & $0{,}70$ \\
 \end{table}
 
 Дообучение на RuleTaker не привело к деградации: на \texttt{math\_500} и \texttt{aime} обе RL-политики и SFT-модель остаются на уровне базовой Qwen3-0.6B (с учётом разброса по числу прогонов), а на \texttt{math\_500} даже несколько превосходят её. Это подтверждает, что предложенная графовая награда обучает структуре рассуждений, не разрушая общую способность модели к выводу. Разрыв с более крупными моделями семейства (Qwen3-1.7B, Qwen3-8B) отражает ожидаемое влияние размера модели и очерчивает потенциал масштабирования метода.
+
+\subsection{Двухэтапный пайплайн SFT\,+\,RL}
+\label{subsec:impl-sft-rl}
+
+Полная методология предусматривает два последовательных этапа обучения, схематически показанных на рис.~\ref{fig:sft-rl}: холодный старт (SFT) адаптирует базовую модель к формату структурированных рассуждений, после чего этап RL с графовой наградой оптимизирует структурную корректность цепочек вывода.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    stage/.style={draw, rounded corners, align=center, minimum height=12mm, minimum width=34mm, font=\small, fill=black!4},
+    mod/.style={draw, align=center, minimum height=12mm, minimum width=26mm, font=\small, fill=black!8},
+    arr/.style={-{Stealth[length=2mm]}, thick},
+    node distance=12mm,
+]
+\node[mod] (base) {Qwen3-0.6B\\\footnotesize (база)};
+\node[stage, right=of base] (sft) {Этап 1: SFT\\\footnotesize cold-start, max-likelihood};
+\node[mod, right=of sft] (ckpt) {Qwen3-0.6B\\-lora-rus};
+\node[stage, right=of ckpt] (rl) {Этап 2: RL (GRPO)\\\footnotesize графовая награда};
+\node[mod, right=of rl] (final) {Обученная\\политика};
+\draw[arr] (base) -- (sft);
+\draw[arr] (sft) -- (ckpt);
+\draw[arr] (ckpt) -- (rl);
+\draw[arr] (rl) -- (final);
+\draw[arr, dashed] (base.south) to[out=-30, in=-150] node[below, font=\scriptsize, align=center]{контрастная серия: RL напрямую от базы ($\alpha{=}0$ vs $\alpha{>}0$)} (rl.south);
+\end{tikzpicture}
+\caption{Двухэтапный пайплайн обучения. Пунктиром показана контрастная серия, инициализируемая базовой моделью в обход SFT}
+\label{fig:sft-rl}
+\end{figure}
+
+Сводное сравнение конфигураций по целевой точности и структурным метрикам приведено в таблице~\ref{tab:sft-rl}. Часть значений (структурные метрики и комбинированный режим SFT$\to$RL) получается по мере завершения оценки на бенчмарке \texttt{ruletaker\_adapter} и обозначена символом~[---].
+
+\begin{table}[H]
+\centering
+\caption{Сравнение конфигураций двухэтапного пайплайна на RuleTaker}
+\label{tab:sft-rl}
+\small
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Конфигурация} & \textbf{Accuracy} & \textbf{Coverage} & \textbf{Edge $F_1$} & \textbf{GES} \\
+\hline
+Qwen3-0.6B (база)                 & [---]    & [---] & [---] & [---] \\
+\hline
+SFT (\texttt{lora-rus})           & [---]    & [---] & [---] & [---] \\
+\hline
+RL от базы, $\alpha=0$ (baseline) & $0{,}6991$ & [---] & [---] & [---] \\
+\hline
+RL от базы, $\alpha>0$ (graph)    & $0{,}6981$ & [---] & [---] & [---] \\
+\hline
+SFT\,$\to$\,RL, $\alpha>0$        & [---]    & [---] & [---] & [---] \\
+\hline
+\end{tabular}
+\end{table}
+
+Ожидается, что вклад графовой награды проявится прежде всего в столбцах Coverage, Edge~$F_1$ и GES (структурная корректность), тогда как по точности метки конфигурации сопоставимы. Комбинированный режим SFT\,$\to$\,RL позволит оценить, усиливает ли холодный старт эффект графовой награды.
+
+\subsection{Ограничения реализации и угрозы валидности}
+\label{subsec:impl-limitations}
+
+Для корректной интерпретации результатов отметим ограничения реализации и потенциальные угрозы валидности выводов.
+\begin{itemize}
+    \setlength{\itemsep}{\smallskipamount}
+    \item \textit{Неполнота структурной оценки.} На момент подготовки работы прямое сравнение по структурным метрикам (Coverage, Edge~$F_1$, GES) для всех конфигураций не завершено (таблица~\ref{tab:sft-rl}); основной вывод о влиянии графовой награды на структуру рассуждений требует подтверждения этими измерениями и проверки статистической значимости различий.
+    \item \textit{Зависимость от качества извлечения графа.} Точность графовой награды ограничена качеством парсинга ответа: ошибки извлечения троек (особенно у компактной модели на ранних шагах обучения) вносят шум в обучающий сигнал; этот эффект частично компенсируется штрафами за нарушение формата и fallback-экстрактором.
+    \item \textit{Масштаб модели и единственная архитектура.} Эксперименты проведены на одной компактной модели (Qwen3-0.6B); обобщение выводов на другие размеры и семейства моделей требует отдельной проверки.
+    \item \textit{Разброс на внешних бенчмарках.} Значения в таблице~\ref{tab:generalization} получены при разном числе прогонов и малых выборках (особенно \texttt{aime}), поэтому их следует интерпретировать как индикативные, а не как точные оценки.
+    \item \textit{Специфика сопоставления для Wikidata.} Сопоставление сущностей по нормализованному расстоянию Левенштейна с фиксированным порогом $0{,}8$ может приводить к ложным совпадениям/пропускам для близких по написанию сущностей.
+\end{itemize}
+Учёт этих ограничений определяет направления дальнейшей работы (раздел~\ref{subsec:conclusion-future}).
+
+\subsection{Воспроизводимость и программное окружение}
+\label{subsec:impl-repro}
+
+Для обеспечения воспроизводимости все зависимости зафиксированы: окружение \texttt{smart-thinking-llm} управляется \texttt{poetry} (с экспортом в \texttt{requirements.txt}), окружение \texttt{TunePPO}~--- спецификацией \texttt{pyproject.toml}. Версии ключевых библиотек приведены в таблице~\ref{tab:versions}. Случайность контролируется фиксированным значением \texttt{seed}~$=42$ при разбиении данных и сэмплировании. Для управления крупными артефактами данных (граф Wikidata5m, подготовленные датасеты) используется \texttt{DVC}. Запуск обучения оформлен в виде shell-скриптов (\texttt{h100\_edge\_run.sh}, \texttt{struct\_run.sh}), фиксирующих все гиперпараметры командной строки.
+
+\begin{table}[H]
+\centering
+\caption{Версии ключевых библиотек программного окружения}
+\label{tab:versions}
+\small
+\begin{tabular}{|l|c|l|}
+\hline
+\textbf{Библиотека} & \textbf{Версия} & \textbf{Назначение} \\
+\hline
+Python        & 3.11        & язык реализации \\
+torchtune     & 0.6.1       & RL-стек TunePPO \\
+vLLM          & 0.8.5       & инференс на rollout \\
+transformers  & 4.49+       & модели и токенизаторы \\
+networkx      & 3.5         & графы и GED \\
+pydantic      & 2.11        & схемы Structured Output \\
+openai        & 1.97        & клиент инференс-API \\
+rapidfuzz     & 3.12        & расстояние Левенштейна \\
+datasets      & 3.2         & загрузка датасетов \\
+wandb         & 0.21        & логирование обучения \\
+tensorboard   & 2.20        & логирование оценки \\
+\hline
+\end{tabular}
+\end{table}
+
+Таким образом, сочетание фиксированных версий, скриптов запуска с явными гиперпараметрами, версионирования данных через DVC и публикации датасета \texttt{KGReasoning} обеспечивает полную воспроизводимость экспериментов, что соответствует требованию документированности из раздела~\ref{subsec:requirements}.
